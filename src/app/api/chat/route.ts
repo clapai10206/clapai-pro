@@ -1,99 +1,78 @@
 import { NextResponse } from 'next/server';
 
-const demoResponses = {
-  Darija: 'أكيد! غادي نعاونك، ومرحبًا بك في CLAPAI PRO.',
-  العربية: 'أكيد! سأساعدك، مرحبًا بك في CLAPAI PRO.',
-  EN: 'Absolutely! I can help you with that.',
-  FR: 'Bien sûr ! Je peux vous aider avec ça.',
-} as const;
+const systemPrompt =
+  "You are ClapAI Pro, a smart Moroccan food ordering assistant for Tajine.\n\nLANGUAGE RULE - VERY IMPORTANT:\n- Detect user's language.\n- If user writes in Darija Arabic: answer in Moroccan Darija with Arabic letters. Example: سلام مرحبا بيك شنو بغيتي فالطاجين؟\n- If user writes in French: answer in French.\n- If user writes in English: answer in English.\n- If user writes Darija in Latin (bghit tajine): answer in Darija Arabic letters.\n\nYour goal: take order (type of tajine, number of people, address, time). Be short, friendly, add emoji.";
 
-function getSystemPrompt(lang: string) {
-  if (lang === 'Darija') {
-    return 'أنت مساعد ذكي ومهني. رد بالدارجة المغربية بشكل طبيعي ومريح، مختصر لكن مفيد. إذا ما عرفت الجواب، قلها بوضوح وقدم اقتراحات عملية.';
-  }
+const darijaError =
+  'سمح ليا، وقع مشكل فالاتصال بخدمة الذكاء الاصطناعي. عاود حاول من بعد.';
 
-  if (lang === 'العربية') {
-    return 'أنت مساعد ذكي ومهني. أجب باللغة العربية الفصحى الواضحة، ولا تستخدم الدارجة المغربية في هذا الوضع. اجعل الإجابة مختصرة ومفيدة، وإذا لم تعرف الإجابة فقل ذلك بوضوح وقدم اقتراحات عملية.';
-  }
-
-  if (lang === 'FR') {
-    return 'Tu es un assistant utile et professionnel. Réponds en français, clair et naturel, avec un ton professionnel et pratique.';
-  }
-
-  return 'You are a helpful professional assistant. Answer clearly, concisely, and practically.';
+function requestGroq(apiKey: string, message: string, model: string) {
+  return fetch('https://api.groq.com/openai/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: message },
+      ],
+      temperature: 0.7,
+      max_tokens: 300,
+    }),
+  });
 }
 
 export async function POST(req: Request) {
+  let body: unknown;
+
   try {
-    const body = await req.json();
-    const message = typeof body.message === 'string' ? body.message.trim() : '';
-    const lang = typeof body.lang === 'string' ? body.lang : 'EN';
-
-    if (!message) {
-      return NextResponse.json(
-        { reply: demoResponses[lang as keyof typeof demoResponses] ?? demoResponses.EN },
-        { status: 400 }
-      );
-    }
-
-    const groqApiKey = process.env.GROQ_API_KEY;
-    const xaiApiKey = process.env.XAI_API_KEY || process.env.GROK_API_KEY;
-    const apiKey = groqApiKey || xaiApiKey;
-
-    if (!apiKey) {
-      return NextResponse.json(
-        {
-          error: 'AI provider is not configured.',
-          reply:
-            lang === 'Darija'
-              ? 'مفتاح Groq أو xAI مازال ما مضافش. زيدو في ملف .env.local ومن بعد عاود شغل الموقع.'
-              : lang === 'العربية'
-                ? 'لم تتم إضافة مفتاح Groq أو xAI بعد. أضفه في ملف .env.local ثم أعد تشغيل الموقع.'
-                : lang === 'FR'
-                  ? 'La clé Groq ou xAI n’est pas configurée. Ajoutez-la dans .env.local puis redémarrez le site.'
-                  : 'The Groq or xAI API key is not configured. Add it to .env.local and restart the site.',
-        },
-        { status: 503 }
-      );
-    }
-
-    const isGroq = Boolean(groqApiKey);
-    const response = await fetch(
-      isGroq
-        ? 'https://api.groq.com/openai/v1/chat/completions'
-        : 'https://api.x.ai/v1/chat/completions',
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify({
-          model: isGroq
-            ? process.env.GROQ_MODEL || 'qwen/qwen3.8-27b'
-            : process.env.GROK_MODEL || 'grok-2-latest',
-          messages: [
-            { role: 'system', content: getSystemPrompt(lang) },
-            { role: 'user', content: message },
-          ],
-          temperature: 0.7,
-          max_tokens: 300,
-        }),
-      }
+    body = await req.json();
+  } catch {
+    return NextResponse.json(
+      { error: 'الطلب ما مفهومش. عاود صيفطو بصيغة صحيحة.', reply: 'الطلب ما مفهومش. عاود صيفطو بصيغة صحيحة.' },
+      { status: 400 }
     );
+  }
+
+  const message =
+    typeof body === 'object' && body !== null && 'message' in body &&
+    typeof body.message === 'string'
+      ? body.message.trim()
+      : '';
+
+  if (!message) {
+    return NextResponse.json(
+      { error: 'كتب ليا شنو بغيتي تسول.', reply: 'كتب ليا شنو بغيتي تسول.' },
+      { status: 400 }
+    );
+  }
+
+  const apiKey = process.env.GROQ_API_KEY;
+  if (!apiKey) {
+    return NextResponse.json(
+      {
+        error: 'GROQ_API_KEY ما متضبطش فإعدادات الخادم.',
+        reply: 'مفتاح Groq ما متضبطش دابا. زيد GROQ_API_KEY فملف .env.local وعاود شغل الموقع.',
+      },
+      { status: 503 }
+    );
+  }
+
+  try {
+    let response = await requestGroq(apiKey, message, 'llama-3.3-70b-versatile');
+
+    if (response.status === 404) {
+      response = await requestGroq(apiKey, message, 'qwen/qwen3.8-27b');
+    }
 
     if (!response.ok) {
       return NextResponse.json(
         {
-          error: `AI provider request failed with status ${response.status}.`,
-          reply:
-            lang === 'Darija'
-              ? 'وقع مشكل فالاتصال بخدمة الذكاء الاصطناعي. تأكد من المفتاح واسم النموذج وحاول مرة أخرى.'
-              : lang === 'العربية'
-                ? 'حدثت مشكلة في الاتصال بخدمة الذكاء الاصطناعي. تحقق من المفتاح واسم النموذج ثم حاول مجددًا.'
-                : lang === 'FR'
-                  ? 'La connexion au service IA a échoué. Vérifiez la clé et le nom du modèle, puis réessayez.'
-                  : 'The AI service request failed. Check the API key and model name, then try again.',
+          error: `Groq API رجع الحالة ${response.status}.`,
+          reply: darijaError,
         },
         { status: 502 }
       );
@@ -104,7 +83,7 @@ export async function POST(req: Request) {
 
     if (typeof reply !== 'string' || !reply.trim()) {
       return NextResponse.json(
-        { error: 'AI provider returned an empty response.' },
+        { error: 'Groq API ما رجع حتى جواب.', reply: darijaError },
         { status: 502 }
       );
     }
@@ -112,11 +91,8 @@ export async function POST(req: Request) {
     return NextResponse.json({ reply });
   } catch {
     return NextResponse.json(
-      {
-        error: 'Unexpected server error.',
-        reply: 'There was an unexpected server error. Please try again later.',
-      },
-      { status: 500 }
+      { error: 'ما قدرناش نتاصلو بخدمة Groq.', reply: darijaError },
+      { status: 502 }
     );
   }
 }
