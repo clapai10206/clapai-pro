@@ -1,81 +1,160 @@
-﻿import { NextResponse } from 'next/server';
-import Stripe from 'stripe';
+import { NextResponse } from 'next/server';
+import { isIP } from 'node:net';
+import { randomUUID } from 'node:crypto';
+import { readPayments } from '@/lib/payments';
+import { decryptPaymentKey, readSiteSettings } from '@/lib/site-settings';
 
 type PlanConfig = {
-  name: string;
   amount: number;
-  stripePrice?: string;
 };
 
 const planMap: Record<string, PlanConfig> = {
-  free: { name: 'Free', amount: 0 },
-  pro: { name: 'Pro', amount: 99, stripePrice: process.env.STRIPE_PRO_PRICE_ID },
-  business: { name: 'Business', amount: 199, stripePrice: process.env.STRIPE_BUSINESS_PRICE_ID },
+  free: { amount: 0 },
+  pro: { amount: 9900 },
+  business: { amount: 19900 },
 };
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function getCustomerIp(request: Request) {
+  const forwardedIp = request.headers.get('x-forwarded-for')?.split(',')[0]?.trim();
+  const realIp = request.headers.get('x-real-ip')?.trim();
+  for (const candidate of [forwardedIp, realIp]) {
+    if (candidate && isIP(candidate)) return candidate;
+  }
+  return '127.0.0.1';
+}
 
 export async function POST(req: Request) {
   try {
-    const { plan, paymentMethod = 'stripe' } = await req.json();
-    const normalizedPlan = String(plan || 'pro').toLowerCase();
-    const planConfig = planMap[normalizedPlan] || planMap.pro;
+    const body: unknown = await req.json();
+    if (!isRecord(body)) {
+      return NextResponse.json({ success: false, message: 'بيانات الطلب ماشي صحيحة.' }, { status: 400 });
+    }
+    const normalizedPlan = typeof body.plan === 'string' ? body.plan.toLowerCase() : 'pro';
+    const paymentMethodId = typeof body.paymentMethod === 'string' ? body.paymentMethod : '';
+    const paymentLanguage =
+      body.lang === 'EN' ? 'en' : body.lang === 'FR' ? 'fr' : 'ar';
+    const planConfig = planMap[normalizedPlan];
 
-    if (paymentMethod === 'bank' || paymentMethod === 'cash') {
-      return NextResponse.json({
-        success: true,
-        method: paymentMethod,
-        url: `/?checkout=success&plan=${normalizedPlan}&method=${paymentMethod}`,
-        message:
-          paymentMethod === 'bank'
-            ? 'Bank transfer is selected. Please contact the sales team to receive the invoice details.'
-            : 'Cash payment is selected. The team will contact you to finalize the order.',
-      });
+    if (!planConfig) {
+      return NextResponse.json({ success: false, message: 'الباقة المطلوبة غير موجودة.' }, { status: 400 });
     }
 
     if (normalizedPlan === 'free') {
       return NextResponse.json({
         success: true,
-        method: paymentMethod,
-        url: `/?checkout=success&plan=${normalizedPlan}&method=${paymentMethod}`,
-        message: 'Free plan selected. Your trial is ready to begin.',
+        url: `/?checkout=success&plan=free`,
+        message: 'تم اختيار الباقة المجانية.',
       });
     }
 
-    const stripeSecretKey = process.env.STRIPE_SECRET_KEY;
-    if (!stripeSecretKey || !planConfig.stripePrice) {
+    const [settings, paymentMethods] = await Promise.all([readSiteSettings(), readPayments()]);
+    const method = paymentMethods.find((item) => item.id === paymentMethodId);
+    if (!method) {
+      return NextResponse.json(
+        { success: false, message: 'وسيلة الأداء هادي ما مفعّلاش. اختار وسيلة أخرى.' },
+        { status: 400 }
+      );
+    }
+
+    if (method.type === 'manual') {
       return NextResponse.json({
         success: true,
-        method: paymentMethod,
-        url: `/?checkout=success&plan=${normalizedPlan}&method=${paymentMethod}`,
-        message: 'Demo checkout activated. Add your Stripe keys to enable live payments.',
+        method: method.id,
+        message: method.instructions
+          ? `طريقة الأداء: ${method.name}\n${method.instructions}`
+          : `طريقة الأداء ${method.name} مختارة. تواصل مع الفريق لإكمال الأداء.`,
       });
     }
 
-    const stripe = new Stripe(stripeSecretKey);
-    const session = await stripe.checkout.sessions.create({
-      mode: 'payment',
-      line_items: [
+    if (method.id !== 'youcan-pay') {
+      return NextResponse.json(
         {
-          price: planConfig.stripePrice,
-          quantity: 1,
+          success: false,
+          message: `بوابة ${method.name} محفوظة في الإعدادات، لكن خاصها ربط تقني خاص بالمزود قبل قبول أداء إلكتروني مباشر.`,
         },
-      ],
-      success_url: `${process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'}?checkout=success&plan=${normalizedPlan}&method=${paymentMethod}`,
-      cancel_url: `${process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'}?checkout=cancel&plan=${normalizedPlan}`,
-      metadata: {
-        plan: normalizedPlan,
-        paymentMethod,
-      },
-      customer_email: process.env.STRIPE_CUSTOMER_EMAIL || undefined,
-      locale: 'auto',
-    });
+        { status: 501 }
+      );
+    }
 
-    return NextResponse.json({ url: session.url, success: true, method: paymentMethod });
-  } catch (error) {
-    return NextResponse.json(
+    const configuredMethod = settings.paymentMethods.find((item) => item.id === method.id);
+    if (!configuredMethod?.apiKeyEncrypted) {
+      return NextResponse.json(
+        { success: false, message: 'دخل private API key ديال YouCan Pay فلوحة التحكم باش يتفعّل الأداء.' },
+        { status: 503 }
+      );
+    }
+
+    let privateKey: string;
+    try {
+      privateKey = decryptPaymentKey(configuredMethod.apiKeyEncrypted);
+    } catch {
+      return NextResponse.json(
+        { success: false, message: 'تعذر قراءة مفتاح YouCan Pay. عاود حفظه من لوحة التحكم.' },
+        { status: 503 }
+      );
+    }
+
+    const sandbox = process.env.YOUCAN_PAY_SANDBOX !== 'false';
+    const appUrl = (process.env.NEXT_PUBLIC_APP_URL || new URL(req.url).origin).replace(/\/+$/, '');
+    const orderId = `clapai-${normalizedPlan}-${randomUUID()}`;
+    const providerResponse = await fetch(
+      `https://youcanpay.com/${sandbox ? 'sandbox/' : ''}api/tokenize`,
       {
-        success: false,
-        message: error instanceof Error ? error.message : 'Checkout failed',
-      },
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        body: JSON.stringify({
+          pri_key: privateKey,
+          amount: String(planConfig.amount),
+          currency: 'MAD',
+          order_id: orderId,
+          customer_ip: getCustomerIp(req),
+          success_url: `${appUrl}/?checkout=success&plan=${normalizedPlan}&method=youcan-pay`,
+          error_url: `${appUrl}/?checkout=cancel&plan=${normalizedPlan}`,
+          customer: {},
+          metadata: { plan: normalizedPlan },
+        }),
+        signal: AbortSignal.timeout(15000),
+      }
+    );
+
+    if (!providerResponse.ok) {
+      return NextResponse.json(
+        { success: false, message: 'YouCan Pay ما قبلش الطلب. تأكد من المفتاح، المبلغ وإعدادات الحساب.' },
+        { status: 502 }
+      );
+    }
+
+    let providerData: unknown;
+    try {
+      providerData = await providerResponse.json();
+    } catch {
+      return NextResponse.json(
+        { success: false, message: 'الجواب ديال YouCan Pay ما كانش صالح. عاود المحاولة من بعد.' },
+        { status: 502 }
+      );
+    }
+    const token = isRecord(providerData) && isRecord(providerData.token) ? providerData.token : null;
+    if (!token || typeof token.id !== 'string' || !token.id) {
+      return NextResponse.json(
+        { success: false, message: 'ما قدرناش نوجدّو صفحة الأداء ديال YouCan Pay. عاود المحاولة من بعد.' },
+        { status: 502 }
+      );
+    }
+
+    const paymentUrl = new URL(
+      `${sandbox ? 'https://youcanpay.com/sandbox/payment-form/' : 'https://youcanpay.com/payment-form/'}${encodeURIComponent(token.id)}`
+    );
+    paymentUrl.searchParams.set('lang', paymentLanguage);
+
+    return NextResponse.json({ url: paymentUrl.toString(), success: true, method: method.id });
+  } catch (error) {
+    console.error('Checkout request failed:', error instanceof Error ? error.message : 'Unknown error');
+    return NextResponse.json(
+      { success: false, message: 'وقع مشكل فبدء الأداء. عاود المحاولة من بعد.' },
       { status: 500 }
     );
   }

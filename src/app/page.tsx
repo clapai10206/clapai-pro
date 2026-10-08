@@ -1,6 +1,8 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import Link from 'next/link';
+import { PaymentMethodLogo } from '@/components/payment-method-logo';
 
 type Message = {
   side: 'user' | 'ai';
@@ -10,13 +12,15 @@ type Message = {
 const languages = ['Darija', 'العربية', 'EN', 'FR'] as const;
 type Language = (typeof languages)[number];
 
-const paymentMethods = [
-  { id: 'stripe', label: 'Stripe', note: 'Visa • Mada • Cards' },
-  { id: 'mada', label: 'Mada', note: 'Carte locale' },
-  { id: 'bank', label: 'Bank', note: 'Virement' },
-  { id: 'cash', label: 'Cash', note: 'Paiement cash' },
-] as const;
-type PaymentMethod = (typeof paymentMethods)[number]['id'];
+type PaymentMethod = {
+  id: string;
+  label: string;
+  logo: string;
+  icon: string;
+  mode: 'manual' | 'gateway';
+  instructions: string;
+  whatsapp: string;
+};
 
 const featureCards = [
   {
@@ -72,6 +76,7 @@ const featureCards = [
 
 const pricingPlans = [
   {
+    id: 'free',
     name: 'Free',
     price: '0 MAD',
     period: '/month',
@@ -85,6 +90,7 @@ const pricingPlans = [
     button: 'Get started',
   },
   {
+    id: 'pro',
     name: 'Pro',
     price: '99 MAD',
     period: '/month',
@@ -99,6 +105,7 @@ const pricingPlans = [
     button: 'Start Pro Trial',
   },
   {
+    id: 'business',
     name: 'Business',
     price: '199 MAD',
     period: '/month',
@@ -246,16 +253,26 @@ function getLocalizedFeatureText(featureTitle: string, language: Language) {
 export default function Page() {
   const [lang, setLang] = useState<Language>('Darija');
   const [query, setQuery] = useState('');
-  const [selectedPayment, setSelectedPayment] = useState<PaymentMethod>('stripe');
+  const [paymentMethods, setPaymentMethods] = useState<PaymentMethod[]>([]);
+  const [selectedPaymentMethod, setSelectedPaymentMethod] = useState('');
+  const [showPaymentModal, setShowPaymentModal] = useState(false);
+  const [paymentModalError, setPaymentModalError] = useState('');
   const [isSending, setIsSending] = useState(false);
-  const [messages, setMessages] = useState<Message[]>([
-    { side: 'user', text: 'واش تقدر تطلب المطعم بالدارجة؟' },
-    { side: 'ai', text: 'أكيد! تقدر تقول: بغيت نطلب طاجين بالدجاج، منين نوصل؟' },
-    { side: 'user', text: 'واش تقدر تطلب المطعم بالدارجة؟' },
-    { side: 'ai', text: 'هنا الرسالة: بغيت نطلب طاجين بالدجاج، وقتاش تقدرو توصلو؟ شكرا!' },
-  ]);
+  const [messages, setMessages] = useState<Message[]>([]);
 
   const content = useMemo(() => translations[lang], [lang]);
+
+  useEffect(() => {
+    fetch('/api/public-config', { cache: 'no-store' })
+      .then(async (response) => {
+        if (!response.ok) throw new Error('Could not load public settings.');
+        const data = await response.json();
+        const activeMethods = data.paymentMethods as PaymentMethod[];
+        setPaymentMethods(activeMethods);
+        setSelectedPaymentMethod(activeMethods[0]?.id ?? '');
+      })
+      .catch(() => setPaymentMethods([]));
+  }, []);
 
   const scrollToSection = (id: string) => {
     document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -295,14 +312,22 @@ export default function Page() {
     }
   };
 
-  const handleCheckout = async (planName: string) => {
+  const handleCheckout = async (planId: string) => {
+    const selectedMethod = paymentMethods.find((method) => method.id === selectedPaymentMethod);
+    setPaymentModalError('');
+    if (!selectedMethod || planId === 'business' || selectedMethod.mode === 'manual') {
+      setShowPaymentModal(Boolean(selectedMethod));
+      return;
+    }
+
     try {
       const response = await fetch('/api/checkout', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          plan: planName.toLowerCase(),
-          paymentMethod: selectedPayment,
+          plan: planId,
+          paymentMethod: selectedPaymentMethod,
+          lang,
         }),
       });
 
@@ -314,15 +339,21 @@ export default function Page() {
       }
 
       if (data.success) {
-        window.alert(data.message || 'Checkout started successfully.');
+        setPaymentModalError(data.message || 'تم إعداد الطلب، تواصل مع الفريق لإكمال الأداء.');
+        setShowPaymentModal(true);
         return;
       }
 
-      window.alert(data.message || 'Unable to start payment right now.');
-    } catch {
-      window.alert('Unable to process payment. Please try again.');
+      setPaymentModalError(data.message || 'تعذر بدء الأداء دابا. عاود المحاولة.');
+      setShowPaymentModal(true);
+    } catch (cause) {
+      console.error('Checkout request failed:', cause);
+      setPaymentModalError('وقع مشكل فبدء الأداء. عاود المحاولة من بعد.');
+      setShowPaymentModal(true);
     }
   };
+
+  const selectedMethod = paymentMethods.find((method) => method.id === selectedPaymentMethod);
 
   const localizedPricingPlans = pricingPlans.map((plan) => ({
     ...plan,
@@ -378,13 +409,12 @@ export default function Page() {
               ))}
             </div>
 
-            <button
-              type="button"
-              onClick={() => window.alert('Login flow is coming soon.')}
+            <Link
+              href="/admin"
               className="rounded-full border border-[#1d1d1f] bg-white px-4 py-2 text-sm font-bold text-[#1d1d1f] shadow-sm"
             >
               {content.login}
-            </button>
+            </Link>
             <button
               type="button"
               onClick={() => scrollToSection('pricing')}
@@ -548,27 +578,6 @@ export default function Page() {
                     </span>
                   </div>
 
-                  <div className="mt-2 flex flex-wrap gap-2">
-                    {paymentMethods.map((method) => (
-                      <button
-                        key={method.id}
-                        type="button"
-                        onClick={() => setSelectedPayment(method.id)}
-                        className={
-                          selectedPayment === method.id
-                            ? plan.featured
-                              ? 'rounded-full border border-[#c9b4ff] bg-[#7c3aed] px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.08em] text-white'
-                              : 'rounded-full border border-[#7c3aed] bg-[#efe7ff] px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.08em] text-[#4b1ea8]'
-                            : plan.featured
-                              ? 'rounded-full border border-[#3a2d49] bg-[#241a2f] px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.08em] text-[#d7d0e1]'
-                              : 'rounded-full border border-[#d9d9dd] bg-white px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.08em] text-[#36363a]'
-                        }
-                      >
-                        {method.label}
-                      </button>
-                    ))}
-                  </div>
-
                   <ul className="space-y-3 pt-4 text-[14px] leading-6">
                     {plan.features.map((item) => (
                       <li key={item} className="flex items-start gap-2">
@@ -580,13 +589,54 @@ export default function Page() {
                     ))}
                   </ul>
 
+                  {plan.id !== 'free' && paymentMethods.length > 0 && (
+                    <div className="mt-5">
+                      <p className={`mb-2 text-xs font-semibold ${plan.featured ? 'text-[#d8d1de]' : 'text-[#5c5c60]'}`}>
+                        {lang === 'EN' ? 'Choose a payment method' : lang === 'FR' ? 'Choisissez un moyen de paiement' : 'اختار وسيلة الدفع'}
+                      </p>
+                      <div className="flex flex-wrap gap-2">
+                        {paymentMethods.map((method) => (
+                          <button
+                            key={method.id}
+                            type="button"
+                            aria-label={method.label}
+                            aria-pressed={selectedPaymentMethod === method.id}
+                            title={method.label}
+                            onClick={() => {
+                              setSelectedPaymentMethod(method.id);
+                              setPaymentModalError('');
+                              setShowPaymentModal(true);
+                            }}
+                            className={
+                              selectedPaymentMethod === method.id
+                                ? plan.featured
+                                  ? 'rounded-full border border-[#c9b4ff] bg-[#7c3aed] px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.08em] text-white'
+                                  : 'rounded-full border border-[#7c3aed] bg-[#efe7ff] px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.08em] text-[#4b1ea8]'
+                                : plan.featured
+                                  ? 'rounded-full border border-[#3a2d49] bg-[#241a2f] px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.08em] text-[#d7d0e1]'
+                                  : 'rounded-full border border-[#d9d9dd] bg-white px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.08em] text-[#36363a]'
+                            }
+                          >
+                            <PaymentMethodLogo
+                              id={method.id}
+                              label={method.label}
+                              logo={method.logo}
+                              icon={method.icon}
+                              className={method.id === 'cash-plus' ? 'h-5 w-5' : method.id === 'bank-transfer' || method.id === 'cash-on-delivery' ? 'h-5 w-7' : 'h-4 w-16'}
+                            />
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
                   <button
                     type="button"
-                    onClick={() => handleCheckout(plan.name)}
+                    onClick={() => handleCheckout(plan.id)}
                     className={
                       plan.featured
-                        ? 'mt-7 w-full rounded-full bg-[#7c3aed] px-4 py-3 text-[15px] font-bold text-white shadow-[0_10px_18px_rgba(124,58,237,0.25)]'
-                        : 'mt-7 w-full rounded-full border border-[#d7d7db] bg-white px-4 py-3 text-[15px] font-bold text-[#1d1d1f]'
+                        ? 'mt-4 w-full rounded-full bg-[#7c3aed] px-4 py-3 text-[15px] font-bold text-white shadow-[0_10px_18px_rgba(124,58,237,0.25)]'
+                        : 'mt-4 w-full rounded-full border border-[#d7d7db] bg-white px-4 py-3 text-[15px] font-bold text-[#1d1d1f]'
                     }
                   >
                     {plan.button}
@@ -599,8 +649,100 @@ export default function Page() {
 
         <footer className="mt-16 border-t border-transparent pt-8 text-center text-[12px] text-[#4c4c52]">
           {content.footer}
+          <div className="mt-5 flex flex-wrap items-center justify-center gap-2">
+            {paymentMethods.map((method) => (
+              <span
+                key={method.id}
+                className="flex h-9 min-w-12 items-center justify-center rounded-full border border-[#e2d9ef] bg-white px-3 py-1.5"
+                aria-label={`وسيلة الدفع: ${method.label}`}
+                title={method.label}
+              >
+                <PaymentMethodLogo
+                  id={method.id}
+                  label={method.label}
+                  logo={method.logo}
+                  icon={method.icon}
+                  className={method.id === 'cash-plus' ? 'h-5 w-5' : method.id === 'bank-transfer' || method.id === 'cash-on-delivery' ? 'h-5 w-7' : 'h-4 w-16'}
+                />
+              </span>
+            ))}
+          </div>
+          <nav className="mt-4 flex flex-wrap justify-center gap-x-5 gap-y-2 text-[12px] font-semibold">
+            {[
+              { slug: 'about', label: 'من نحن' },
+              { slug: 'privacy', label: 'سياسة الخصوصية' },
+              { slug: 'terms', label: 'شروط الاستخدام' },
+              { slug: 'contact', label: 'اتصل بنا' },
+            ].map((page) => (
+              <a key={page.slug} href={`/pages/${page.slug}`} className="text-[#6d2ee6] hover:underline">
+                {page.label}
+              </a>
+            ))}
+          </nav>
         </footer>
       </div>
+      {showPaymentModal && selectedMethod && (
+        <div
+          className="fixed inset-0 z-50 grid place-items-center bg-black/70 p-4 backdrop-blur-sm"
+          onClick={(event) => {
+            if (event.target === event.currentTarget) setShowPaymentModal(false);
+          }}
+        >
+          <section
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="payment-modal-title"
+            className="w-full max-w-md rounded-[26px] border border-[#e7e2ec] bg-white p-6 text-right shadow-[0_24px_70px_rgba(0,0,0,0.3)] sm:p-8"
+          >
+            <div className="mb-5 flex items-center justify-between gap-4">
+              <PaymentMethodLogo
+                id={selectedMethod.id}
+                label={selectedMethod.label}
+                logo={selectedMethod.logo}
+                icon={selectedMethod.icon}
+                className="h-10 w-20"
+              />
+              <button
+                type="button"
+                aria-label="إغلاق"
+                onClick={() => setShowPaymentModal(false)}
+                className="grid h-9 w-9 place-items-center rounded-full bg-[#f3f1f5] text-lg font-bold text-[#4b4651]"
+              >
+                ×
+              </button>
+            </div>
+            <h2 id="payment-modal-title" className="text-xl font-black text-[#1d1d1f]">
+              طريقة الأداء: {selectedMethod.label}
+            </h2>
+            <p className="mt-3 text-sm leading-6 text-[#5c5c60]">تواصل مع الفريق لإكمال الأداء</p>
+            {selectedMethod.instructions && (
+              <p className="mt-3 whitespace-pre-wrap rounded-2xl bg-[#f7f5fa] p-4 text-sm leading-6 text-[#37323d]">
+                {selectedMethod.instructions}
+              </p>
+            )}
+            {paymentModalError && (
+              <p role="alert" className="mt-3 rounded-xl bg-red-50 px-4 py-3 text-sm text-red-700">
+                {paymentModalError}
+              </p>
+            )}
+            <a
+              href={`https://wa.me/${selectedMethod.whatsapp.replace(/\D/g, '')}?text=${encodeURIComponent(`السلام عليكم، بغيت نكمل الأداء عبر ${selectedMethod.label}`)}`}
+              target="_blank"
+              rel="noreferrer"
+              className="mt-5 flex w-full items-center justify-center rounded-full bg-[#25D366] px-5 py-3 text-sm font-bold text-white transition hover:bg-[#1fb85a]"
+            >
+              تواصل عبر واتساب
+            </a>
+            <button
+              type="button"
+              onClick={() => setShowPaymentModal(false)}
+              className="mt-4 w-full text-sm font-bold text-[#6d2ee6] hover:underline"
+            >
+              👉 اختيار وسيلة دفع أخرى
+            </button>
+          </section>
+        </div>
+      )}
     </div>
   );
 }

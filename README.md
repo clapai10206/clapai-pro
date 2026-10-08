@@ -20,6 +20,19 @@ You can start editing the page by modifying `app/page.tsx`. The page auto-update
 
 This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
 
+## Local admin dashboard
+
+Open `/admin` to manage enabled payment methods and the About, Privacy, Terms, and Contact pages. Configure these server-only variables in the project-root `.env.local` file before starting the site:
+
+```env
+ADMIN_PASSWORD=use_a_unique_password_at_least_16_characters_long
+ADMIN_SESSION_SECRET=use_at_least_32_random_characters
+```
+
+The dashboard stores settings in `.data/site-settings.json` and encrypts saved payment API keys with `ADMIN_SESSION_SECRET`. `.env.local` and `.data/` are ignored by Git. This file-based storage is intended for local experimentation only: deployments with ephemeral filesystems can lose settings after redeploying, and multiple server instances will not share changes.
+
+Payment display options and instructions are managed from `/admin/payments` and stored in `src/data/payments.json`; the editor is protected by the admin session. The optional WhatsApp number is blank by default. The JSON file is written at runtime, so this file-based editor is intended for local experimentation and requires a writable project directory. YouCan Pay uses its hosted checkout: save the private API key on the YouCan Pay method in `/admin`, then set `YOUCAN_PAY_SANDBOX=true` for testing or `false` for live payments. The Pro and Business checkout amounts use the prices shown on the site (99 MAD and 199 MAD). YouCan Pay API keys are encrypted in local settings and never sent to the browser.
+
 ## Learn More
 
 To learn more about Next.js, take a look at the following resources:

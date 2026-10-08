@@ -1,0 +1,26 @@
+[
+  {
+    "id": "wafacash",
+    "name": "Wafacash",
+    "icon": "/payment-methods/wafacash.webp",
+    "instructions": "",
+    "type": "manual",
+    "whatsapp": ""
+  },
+  {
+    "id": "cash-plus",
+    "name": "Cash Plus",
+    "icon": "/payment-methods/cash-plus.png",
+    "instructions": "",
+    "type": "manual",
+    "whatsapp": ""
+  },
+  {
+    "id": "bank-transfer",
+    "name": "Bank Transfer",
+    "icon": "/payment-methods/bank-transfer.svg",
+    "instructions": "",
+    "type": "manual",
+    "whatsapp": ""
+  }
+]
